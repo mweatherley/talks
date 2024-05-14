@@ -1,0 +1,395 @@
+%%
+% Please see https://bitbucket.org/rivanvx/beamer/wiki/Home for obtaining beamer.
+%%
+\documentclass[10pt]{beamer}
+\usetheme{metropolis}
+
+% Colors based on Paul Tol's recommendations for marking text (https://personal.sron.nl/~pault/#textmarking)
+
+\definecolor{BlueTOL}{HTML}{222255}
+\definecolor{BrownTOL}{HTML}{666633}
+\definecolor{GreenTOL}{HTML}{225522}
+\setbeamercolor{normal text}{fg=BlueTOL,bg=white}
+\setbeamercolor{alerted text}{fg=BrownTOL}
+\setbeamercolor{example text}{fg=GreenTOL}
+
+%\setbeamercolor{block title alerted}{use=alerted text,
+%    fg=alerted text.fg,
+%    bg=}
+%\setbeamercolor{block body alerted}{use={block title alerted, alerted text},
+%    fg=alerted text.fg,
+%    bg=}
+%\setbeamercolor{block title example}{use=example text,
+%    fg=example text.fg,
+%    bg=}
+%\setbeamercolor{block body example}{use={block title example, example text},
+%    fg=example text.fg,
+%    bg=}
+    
+\setbeamercolor{block title alerted}{use=alerted text,
+    fg=alerted text.fg,
+    bg=alerted text.bg!80!alerted text.fg}
+\setbeamercolor{block body alerted}{use={block title alerted, alerted text},
+    fg=alerted text.fg,
+    bg=block title alerted.bg!50!alerted text.bg}
+\setbeamercolor{block title example}{use=example text,
+    fg=example text.fg,
+    bg=example text.bg!80!example text.fg}
+\setbeamercolor{block body example}{use={block title example, example text},
+    fg=example text.fg,
+    bg=block title example.bg!50!example text.bg}
+
+\usepackage{listings, listings-rust}
+\usepackage{hyperref}
+
+%Information to be included in the title page:
+\title{\textsc{Some tidbits about functional interfaces}}
+\author{Matty Weatherley}
+\date{}
+
+\begin{document}
+\lstset{
+	tabsize=4, 
+	style=boxed, 
+	showtabs=true,
+	tab=\smash{\rule[-.2\baselineskip]{.4pt}{\baselineskip}\kern.5em},
+	basicstyle=\small\ttfamily,
+}
+
+\maketitle
+
+\begin{frame}[fragile]
+    \frametitle{``Functional interface''}
+    What do I mean by ``functional interface''?
+	\begin{itemize}
+		\item \textit{Functional} in the sense of functional programming --- i.e., composing and applying functions explicitly. (In Rust world, this generally means things which take closures as inputs.)\pause
+		\item \textit{Interface} here being a \textbf{trait}-interface which abstracts over data implementations to provide some shared functionality through methods.\pause
+	\end{itemize}
+	
+	The key example is \verb|Iterator::map|.
+	\metroset{block=fill}
+	\begin{block}{Iterator::map}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        fn map<B, F>(self, f: F) -> Map<Self, F>
+        where
+            Self: Sized,
+            F: FnMut(Self::Item) -> B,
+        { //... }
+	\end{lstlisting}
+	\end{block}
+	
+\end{frame}
+
+\begin{frame}
+    \frametitle{Outline}
+    \begin{enumerate}
+        \item Prototypical implementation
+        \item Specializations
+        \item Ownership and borrowing
+        \item Object safety and type erasure
+    \end{enumerate} 
+\end{frame}
+
+
+\begin{frame}[fragile]
+    \frametitle{Toy example: Curves}
+    Let's use something simpler than \verb|Iterator| for the sake of illustration. Here is a trait that describes one-parameter families of values of type \verb|T|:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        pub trait Curve<S> {
+            fn sample(&self, t: f64) -> S;
+        }
+	\end{lstlisting}\pause
+	Implementors might include curves interpolated from a set of samples, curves defined by functions or equations, and so on.\pause
+	
+	The only required method is \texttt{sample}, but we might also expose something that transforms \texttt{Curve<S>} into \texttt{Curve<T>} given a function \verb|S -> T|:
+	\metroset{block=fill}
+	\begin{block}{Curve::map}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        fn map<T>(self, f: impl Fn(S) -> T) -> impl Curve<T> {
+            //...   
+        }
+	\end{lstlisting}
+	\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Curve::map}
+    \metroset{block=fill}
+    \begin{block}{Concrete implementation}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        struct MapCurve<S, T, C, F> 
+        where
+            C: Curve<S>,
+            F: Fn(S) -> T,
+        {
+            inner: C,
+            function: F,
+            _phantom: PhantomData<(S, T)>,
+        }
+        
+        impl<S, T, C, F> Curve<T> for MapCurve<S, T, C, F>
+        where //... same as above
+        {
+            fn sample(&self, t: f64) -> T {
+                (self.function)(self.inner.sample(t))
+            }
+        }
+        
+	\end{lstlisting}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Curve::map}
+    \verb|MapCurve| provides a basis for our functional interface method:
+    \metroset{block=fill}
+    \begin{block}{Curve::map}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        fn map<T>(self, f: impl Fn(S) -> T) -> impl Curve<T> 
+        where Self: Sized {
+            MapCurve {
+                inner: self,
+                function: f,
+                _phantom: PhantomData,
+            }
+        }
+	\end{lstlisting}\pause
+    \end{block}
+    A few things to notice about this construction:
+    \begin{itemize}
+        \item It's lazy --- i.e. \texttt{f} is never invoked until \texttt{sample} is called on its output.\pause
+        \item It moves \texttt{self} into its output.\pause
+        \item It requires \verb|Self: Sized|.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}
+    \frametitle{Laziness}
+    Some problems with laziness:
+    \metroset{block=fill}
+    \begin{alertblock}{Loss of concreteness}
+        It might be hard, for example, to serialize/deserialize a \texttt{MapCurve} even if the input curve can easily be serialized/deserialized, since it holds an arbitrary \texttt{Fn} closure (and we only have an \texttt{impl Curve<T>} too).
+    \end{alertblock}\pause
+    
+    \begin{alertblock}{Unnecessary complexity}
+        Storing the mapping function may be more complicated or memory-intensive than just transforming some underlying owned data.
+    \end{alertblock}\pause
+
+    \begin{alertblock}{Struct nesting}
+        Since we're embedding the entire input into the \texttt{MapCurve} output, repeated calls will continue to increase the depth of struct nesting. 
+    \end{alertblock}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Some specialized implementations}
+    \metroset{block=fill}
+    \begin{exampleblock}{Example: \texttt{SampleCurve}}
+    Underlying data implementation of \texttt{map} need not actually be lazy:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        struct SampleCurve<S> {
+            samples: Vec<S>,
+        }
+        
+        impl<S> Curve<S> for SampleCurve<S> {
+            fn sample(&self, t: f64) -> S {
+                //... interpolated from self.samples
+            }
+            
+            fn map<T>(self, f: impl Fn(S) -> T) -> impl Curve<T> {
+                let mapped_samples: Vec<T> = self.samples.into_iter()
+                    .map(f)
+                    .collect();
+                SampleCurve { samples: mapped_samples }
+            }
+        } 
+	\end{lstlisting}
+    \end{exampleblock}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Some specialized implementations}
+    One can imagine making a subtrait for types where some functional operations preserve the relevant form of concreteness, as in the preceding example; e.g.:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        pub trait ConcreteCurve<S>: Curve<S> + Serialize + //...
+        {
+            fn map_concrete<T>(self, f: Fn(S) -> T)
+                -> impl ConcreteCurve<T>;
+        }
+    \end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Some specialized implementations}
+    
+    \metroset{block=fill}
+    \begin{exampleblock}{Example: \texttt{MapCurve} itself}
+    Repeated calls to \texttt{Curve::map} can reuse the same inner data:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        impl<S, T, C, F> Curve<T> for MapCurve<S, T, C, F> {
+            //... sample implementation...
+            fn map<U>(self, f: Fn(T) -> U) -> impl Curve<U> {
+                let new_func = move |x| f((self.function)(x));
+                MapCurve {
+                    inner: self.inner,
+                    function: new_func,
+                    _phantom: PhantomData,
+                }
+            }
+        }
+    \end{lstlisting}
+    \end{exampleblock}
+\end{frame}
+\begin{frame}[fragile]
+    \frametitle{Another idea: GATs}
+    Another approach is to specify the output type in the trait:
+    \metroset{block=fill}
+    \begin{exampleblock}{Example: concrete map output type}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        pub trait Curve<S> {
+            //... sample method etc.
+            type MapOutput<T, F: Fn(S) -> T>: Curve<T>;
+            
+            fn map<T, F: impl Fn(S) -> T>(self, f: F) 
+                -> Self::MapOutput<T, F>
+            where Self: Sized;
+        }
+    \end{lstlisting}
+    \end{exampleblock}\pause
+    
+    Caveats: 
+    \begin{itemize}
+        \item \texttt{Curve<S>} is no longer object-safe.\pause
+        \item Associated type defaults are unstable.\pause
+        \item Implementation of \texttt{map} cannot be defaulted.
+    \end{itemize}
+    
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Ownership and borrowing}
+    Onto the next problem: \texttt{Curve::map} takes ownership of \texttt{self}. This can be bad for ergonomics; for example, we might imagine that there is some other \texttt{Curve<S>} method which only needs to immutably borrow \texttt{self}:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        fn extract_data(&self, impl IntoIterator<Item = f64>)
+            -> impl Iterator<Item = S> { //... }
+    \end{lstlisting}\pause
+    
+    Then we run into issues with patterns like this:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        // my_curve is something which implements Curve<f64>
+        let my_curve = function_curve(|t| t * t + 2.0);
+        let some_data = my_curve
+            .map(|x| x * x)
+            .extract_data(some_iterator);
+        // Here, we can no longer use my_curve, even though
+        // we did no mutation
+    \end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Ownership and borrowing}
+    You can try to circumvent this by throwing lifetimes and borrowing into \texttt{MapCurve} itself, but it's arguably better to go the opposite way:\pause
+    \begin{lstlisting}[language=Rust, gobble=8]
+        impl<S, C> Curve<S> for &C
+        where C: Curve<S> {
+            fn sample(&self, t: f64) -> S {
+                <C as Curve<S>>::sample(self, t)
+            }
+        }
+    \end{lstlisting}\pause
+    With this in hand, the problem is easily avoided:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        let my_curve = function_curve(|t| t * t + 2.0);
+        let some_data = (&my_curve)
+            .map(|x| x * x)
+            .extract_data(some_iterator);
+        // Now we can still use my_curve after the borrow
+    \end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Ownership and borrowing}
+    In fact, \texttt{Iterator} does something exactly like this:
+    \metroset{block=fill}
+    \begin{exampleblock}{Example: Iterator}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        impl<I: Iterator + ?Sized> Iterator for &mut I {
+            type Item = I::Item;
+            //... other methods
+        }
+    \end{lstlisting}\pause
+    \end{exampleblock}
+    It also provides the convenience method \verb|by_ref|, which makes syntax for this situation more convenient:
+    \begin{exampleblock}{Example: Iterator::by\_ref}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        fn by_ref(&mut self) -> &mut Self
+        where Self: Sized {
+            self
+        }
+    \end{lstlisting}
+    \end{exampleblock}
+    This lets you write things like \verb|iter.by_ref()| instead of \verb|(&mut iter)|.
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Object safety and type erasure}
+    Finally, \texttt{Curve::map} requires a \texttt{Sized} bound on \texttt{Self} since it must generally embed the \texttt{Curve} implementor into a field of \texttt{MapCurve}.\pause
+    
+    The primary consequence is:
+    \metroset{block=fill}
+    \begin{alertblock}{Exclusion from vtables}
+        A trait method requiring \texttt{Self} to be \texttt{Sized} is considered \emph{explicitly non-dispatchable}, so it is excluded from the trait object completely.
+    \end{alertblock}
+    \begin{alertblock}{Unavailability of method on unsized types}
+        (Obviously.) This most prominently applies to \texttt{dyn Curve<S>} (see above). Note that this means that code like the following simply doesn't work, since the \texttt{Box} gets dereferenced:
+    \begin{lstlisting}[language=Rust, gobble=8]
+        let boxed_curve: Box<dyn Curve<f64>> = Box::new(my_curve);
+        // The following will fail to compile:
+        let mapped_curve = boxed_curve.map(|x| x * 2.0);
+    \end{lstlisting}
+    \end{alertblock}
+
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Object safety and type erasure}
+    Solutions for this kind of situation give implementations of \texttt{Curve<S>} for things like \texttt{Box<dyn Curve<S>>} explicitly:
+    \metroset{block=fill}
+    \begin{lstlisting}[language=Rust, gobble=8]
+        impl<S, C, D> Curve<S> for D
+        where
+            C: Curve<S> + ?Sized,
+            D: Deref<Target = C>,
+        {
+            fn sample(&self, t: f64) -> S {
+                <C as Curve<S>>::sample(self, t)
+            }
+        }
+    \end{lstlisting}
+    The practical implication is that calling \texttt{Curve::map} on a \texttt{Box<dyn Curve<S>>} uses the generic implementation of \texttt{map} based on the implementation of \texttt{sample} which is dispatched dynamically. 
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Object safety and type erasure}
+    \metroset{block=fill}
+    \begin{block}{\&T}
+        Note that \texttt{\&T} implements \texttt{Deref} with a target of \texttt{T}, so this is actually subsumes the previously discussed blanket implementation.
+    \end{block}\pause
+    \begin{alertblock}{Caveat emptor}
+        There is something sneakily problematic here: a specialized implementation of \texttt{map} can be passed through to a \texttt{\&T}, but in the \texttt{Deref} version that is impossible because of the required \verb|?Sized| bound which must therefore exclude \texttt{map}.
+    \end{alertblock}\pause
+(Always be suspicious of trait-based blanket implementations.)
+\end{frame}
+
+\begin{frame}
+    \frametitle{That's all!}
+    Thanks for listening! This talk should be available on my GitHub profile if you want to see any of the slides again:
+    
+    
+    \url{https://github.com/mweatherley}
+\end{frame}
+
+
+
+
+
+\end{document}
