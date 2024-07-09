@@ -1,0 +1,251 @@
+%%
+% Please see https://bitbucket.org/rivanvx/beamer/wiki/Home for obtaining beamer.
+%%
+\documentclass[10pt]{beamer}
+\usetheme{metropolis}
+
+% Colors based on Paul Tol's recommendations for marking text (https://personal.sron.nl/~pault/#textmarking)
+
+\definecolor{BlueTOL}{HTML}{222255}
+\definecolor{BrownTOL}{HTML}{666633}
+\definecolor{GreenTOL}{HTML}{225522}
+\setbeamercolor{normal text}{fg=BlueTOL,bg=white}
+\setbeamercolor{alerted text}{fg=BrownTOL}
+\setbeamercolor{example text}{fg=GreenTOL}
+
+%\setbeamercolor{block title alerted}{use=alerted text,
+%    fg=alerted text.fg,
+%    bg=}
+%\setbeamercolor{block body alerted}{use={block title alerted, alerted text},
+%    fg=alerted text.fg,
+%    bg=}
+%\setbeamercolor{block title example}{use=example text,
+%    fg=example text.fg,
+%    bg=}
+%\setbeamercolor{block body example}{use={block title example, example text},
+%    fg=example text.fg,
+%    bg=}
+    
+\setbeamercolor{block title alerted}{use=alerted text,
+    fg=alerted text.fg,
+    bg=alerted text.bg!80!alerted text.fg}
+\setbeamercolor{block body alerted}{use={block title alerted, alerted text},
+    fg=alerted text.fg,
+    bg=block title alerted.bg!50!alerted text.bg}
+\setbeamercolor{block title example}{use=example text,
+    fg=example text.fg,
+    bg=example text.bg!80!example text.fg}
+\setbeamercolor{block body example}{use={block title example, example text},
+    fg=example text.fg,
+    bg=block title example.bg!50!example text.bg}
+
+\usepackage{listings, listings-rust}
+\usepackage{hyperref}
+
+%Information to be included in the title page:
+\title{\textsc{Reflection: type-registered data}}
+\author{Matty Weatherley}
+\date{}
+
+\begin{document}
+\lstset{
+	tabsize=4, 
+	style=boxed, 
+	showtabs=true,
+	tab=\smash{\rule[-.2\baselineskip]{.4pt}{\baselineskip}\kern.5em},
+	basicstyle=\small\ttfamily,
+}
+
+\maketitle
+
+\begin{frame}[fragile]
+    \frametitle{Reflection}
+    What is reflection?
+
+    \begin{itemize}
+        \item Reflection refers to the ability for a program and/or its components to introspect on their own structure. \pause
+        \item Often, what we want to do with reflection is to breaking down the compile-time/runtime distinction --- for example, types aren't ``real'' at runtime, but we might still want to know about them. \pause
+    \end{itemize}
+
+	For example, maybe we want to know how types are shaped at runtime:
+	\metroset{block=fill}
+	\begin{block}{Introspection on a struct}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        struct Foo {
+            bar: u16,
+            baz: String,
+        }
+        
+        // We want something like:
+        let fields: StructFields = <Foo as Reflect>::fields()?;
+	\end{lstlisting}
+	\end{block}
+	
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Reflection}
+    How do we do reflection in Rust?
+
+    \begin{itemize}
+        \item Store extra information in the vtable part of trait objects. \pause
+        \item This generally means we end up with a trait \texttt{Reflect} that keeps track of the additional information. \pause
+        \item This means that casting to \texttt{dyn Reflect} is what gets the information actually inserted at runtime. \pause
+    \end{itemize}
+	
+	Here is what we get just from Rust:
+	
+	\metroset{block=fill}
+	\begin{block}{Any}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        pub trait Any: 'static {
+            fn type_id(&self) -> TypeId;
+        }
+	\end{lstlisting}
+	\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Identifiers and registries}
+    The \texttt{Any} trait can be made more useful by combining it with a type registry, which uses type identifiers as keys for retrieving type data at runtime. \pause
+    
+    For example:
+    
+	\metroset{block=fill}
+	\begin{block}{bevy\_reflect::TypeRegistry}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        pub struct TypeRegistry {
+            registrations: TypeIdMap<TypeRegistration>,
+            short_path_to_id: HashMap<&'static str, TypeId>,
+            type_path_to_id: HashMap<&'static str, TypeId>,
+            ambiguous_names: HashSet<&'static str>,
+        }
+	\end{lstlisting}
+	\end{block}
+	
+	(\texttt{TypeIdMap<TypeRegistration>} $\approx$ \\ \texttt{HashMap<TypeId, TypeRegistration>})
+	
+\end{frame}
+
+\begin{frame}
+    \frametitle{Identifiers and registries}
+    What kinds of things might go in a type registry?
+    
+    \begin{itemize}
+        \item Just more information about the type --- e.g., struct fields, enum variants, the type's path, etc. Basically, anything known about the type at compile time fits into this paradigm. \pause
+        \item Auxiliary data for working with the type dynamically. This is much more subtle and often involves function pointers. \pause
+        \item Whatever you want! \pause
+    \end{itemize}
+    
+    The main thing to keep in mind is that type registries are not magical and they are generally constructed at runtime (maybe one day the ``life before main'' story will change that somewhat). 
+
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Identifiers and registries: TypeRegistration}
+    For example, here is bevy\_reflect's type registration, which includes both shape/identity information (\texttt{TypeInfo}) and essentially arbitrary additional data which must be type-unique per type (\texttt{TypeData}):
+    
+    \metroset{block=fill}
+	\begin{block}{bevy\_reflect::TypeRegistration}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        pub struct TypeRegistration {
+            data: TypeIdMap<Box<dyn TypeData>>,
+            type_info: &'static TypeInfo,
+        }
+	\end{lstlisting}
+	\end{block}
+    
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Identifiers and registries: ReflectDefault}
+    Here is a basic example of auxiliary data being used to implement a reflected version of \texttt{Default}:
+    
+	\metroset{block=fill}
+	\begin{block}{bevy\_reflect::ReflectDefault}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        pub struct ReflectDefault {
+            default: fn() -> Box<dyn Reflect>,
+        }
+        impl ReflectDefault {
+            pub fn default(&self) -> Box<dyn Reflect> {
+                (self.default)()
+            }
+        }
+        impl<T: Reflect + Default> FromType<T> for ReflectDefault {
+            fn from_type() -> Self {
+                ReflectDefault {
+                    default: || Box::<T>::default(),
+                }
+            }
+        }
+	\end{lstlisting}
+	\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Identifiers and registries: ReflectDefault}
+    Here is how you would use such a thing (stolen from bevy\_reflect docs):
+    
+	\metroset{block=fill}
+	\begin{block}{bevy\_reflect::ReflectDefault in practice}
+	\begin{lstlisting}[language=Rust, gobble=8]
+        #[derive(Reflect, Default)]
+        struct MyStruct {
+          foo: i32
+        }
+        let mut registry = TypeRegistry::empty();
+        registry.register::<MyStruct>();
+        registry.register_type_data::<MyStruct, ReflectDefault>();
+        
+        let registration = 
+            registry.get(TypeId::of::<MyStruct>()).unwrap();
+        let reflect_default = 
+            registration.data::<ReflectDefault>().unwrap();
+        
+        let new_value: Box<dyn Reflect> = reflect_default.default();
+        assert!(new_value.is::<MyStruct>());
+	\end{lstlisting}
+	\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Identifiers and registries}
+    Using similar tricks (that is, storing function pointers in type-associated data), you can do things like casting from \texttt{Box<dyn Reflect>} to \texttt{Box<dyn Trait>} for types that implement \texttt{Trait}.
+    
+    (And in bevy\_reflect, this machinery can be derived for you for object-safe traits.) \pause
+    
+    This is tantamount to checking at runtime whether a type implements a trait and using it dynamically when it does.
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Limitations}
+    This stuff is pretty nifty, but there are some shortcomings and limitations to keep in mind:
+    \begin{itemize}
+        \item Working with generics can be very thorny and generally leaves you with the choice of cherrypicking monomorphized types at compile time or trying to implement blanket solutions which treat the generic parameter opaquely (e.g. using \texttt{dyn Reflect}). \pause
+        \item The compiler doesn't know a lot of things that you know, so the code often involves both verbosity and a bunch of conversions, downcasting, and unwrapping. Basically, this isn't very Rusty. \pause
+        \item Because of the orphan rule, you cannot implement reflection on foreign types unless you also own the reflection trait you're implementing, which can make interoperation painful or impossible. \pause
+        \item All of this has performance overhead. 
+    \end{itemize}
+\end{frame}
+
+\begin{frame}
+    \frametitle{That's all!}
+    Thanks for listening! This talk should be available on my GitHub profile if you want to see any of the slides again:
+    
+    \url{https://github.com/mweatherley/talks}
+    
+    \vspace{10mm}
+    And bevy\_reflect is here:
+    
+    \url{https://crates.io/crates/bevy_reflect}
+    
+    \vspace{10mm}
+    Next time: \texttt{TypeInfo}, dynamic types, and dynamic data access.
+\end{frame}
+
+
+
+
+
+\end{document}
